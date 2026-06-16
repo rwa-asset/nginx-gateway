@@ -1,0 +1,44 @@
+name: nginx-gateway-cert-renew
+
+on:
+  schedule:
+    - cron: "23 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nginx-gateway-cert-renew-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  renew:
+    runs-on: ubuntu-latest
+    environment: prod
+    concurrency:
+      group: nginx-gateway-cert-renew-prod
+      cancel-in-progress: false
+    env:
+      APP_ENV: prod
+      DEPLOY_PATH: ${{ vars.DEPLOY_PATH || '/opt/projects/nginx-gateway2' }}
+    steps:
+      - name: Renew certificate on server
+        uses: appleboy/ssh-action@v1.2.0
+        env:
+          APP_ENV: ${{ env.APP_ENV }}
+          DEPLOY_PATH: ${{ env.DEPLOY_PATH }}
+          LETSENCRYPT_EMAIL: ${{ secrets.LETSENCRYPT_EMAIL }}
+        with:
+          host: ${{ vars.DEPLOY_HOST }}
+          port: ${{ vars.DEPLOY_PORT || '22' }}
+          username: ${{ vars.DEPLOY_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script_stop: true
+          envs: APP_ENV,DEPLOY_PATH,LETSENCRYPT_EMAIL
+          script: |
+            set -eu
+            test -d "$DEPLOY_PATH"
+            cd "$DEPLOY_PATH"
+            test -x ./scripts/renew-cert.sh
+            APP_ENV="$APP_ENV" LETSENCRYPT_EMAIL="${LETSENCRYPT_EMAIL:-}" ./scripts/renew-cert.sh

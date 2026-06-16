@@ -1,0 +1,81 @@
+name: rwagate-gateway-deploy-prod
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rwagate-gateway-prod
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: prod
+    env:
+      APP_ENV: prod
+      DEPLOY_PATH: ${{ vars.DEPLOY_PATH || '/opt/projects/nginx-gateway2' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Package gateway files
+        run: |
+          set -eu
+          mkdir -p .deploy
+          tar -czf .deploy/nginx-gateway.tgz \
+            docker-compose.yml \
+            environments \
+            nginx \
+            scripts \
+            README.md
+
+      - name: Upload package to server
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ vars.DEPLOY_HOST }}
+          port: ${{ vars.DEPLOY_PORT || '22' }}
+          username: ${{ vars.DEPLOY_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          source: ".deploy/nginx-gateway.tgz"
+          target: "/tmp"
+          strip_components: 1
+
+      - name: Deploy on server
+        uses: appleboy/ssh-action@v1.2.0
+        env:
+          APP_ENV: ${{ env.APP_ENV }}
+          DEPLOY_PATH: ${{ env.DEPLOY_PATH }}
+          LETSENCRYPT_EMAIL: ${{ secrets.LETSENCRYPT_EMAIL }}
+        with:
+          host: ${{ vars.DEPLOY_HOST }}
+          port: ${{ vars.DEPLOY_PORT || '22' }}
+          username: ${{ vars.DEPLOY_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script_stop: true
+          envs: APP_ENV,DEPLOY_PATH,LETSENCRYPT_EMAIL
+          script: |
+            set -eu
+
+            mkdir -p "$DEPLOY_PATH"
+            rm -rf "$DEPLOY_PATH/environments" "$DEPLOY_PATH/nginx" "$DEPLOY_PATH/scripts"
+            rm -f "$DEPLOY_PATH/docker-compose.yml" "$DEPLOY_PATH/README.md"
+
+            echo "[nginx-gateway] package contents:"
+            tar -tzf /tmp/nginx-gateway.tgz | sed -n '1,80p'
+            tar -xzf /tmp/nginx-gateway.tgz -C "$DEPLOY_PATH"
+            test -f "$DEPLOY_PATH/docker-compose.yml"
+            test -x "$DEPLOY_PATH/scripts/bootstrap.sh" || chmod +x "$DEPLOY_PATH/scripts/bootstrap.sh"
+            rm -f /tmp/nginx-gateway.tgz
+
+            cd "$DEPLOY_PATH"
+            echo "[nginx-gateway] deploy path: $DEPLOY_PATH"
+            echo "[nginx-gateway] docker binary: $(command -v docker || true)"
+            docker compose version
+            ls -la "$DEPLOY_PATH"
+            chmod +x ./scripts/*.sh ./scripts/tests/*.sh
+            APP_ENV="$APP_ENV" LETSENCRYPT_EMAIL="${LETSENCRYPT_EMAIL:-}" ./scripts/bootstrap.sh
+            APP_ENV="$APP_ENV" ./scripts/compose.sh ps
